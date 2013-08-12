@@ -120,185 +120,327 @@ public class MRF24J40 {
 	
 	public static int RXFIFO = 0x300;
 	
-	private ByteBuffer buffer = ByteBuffer.allocate(65536);
+	private ByteBuffer buffer = ByteBuffer.allocateDirect(65536);
 	private D2XX d2xx;
 	
 	public MRF24J40() throws D2XXException {
 		d2xx = new D2XX();
+		initGPIO();
 		reset();
+
+		/*
+		clearBuffer();
+
+		addWriteRegToBuffer(0x01, 0xBA);
+		addReadRegToBuffer(0x01);
+		
+		addWriteRegToBuffer(0x200, 0xB3);
+		addReadRegToBuffer(0x200);
+
+		addWriteRegToBuffer(0x01, 0xBA);
+		addReadRegToBuffer(0x01);
+		
+		addWriteRegToBuffer(0x200, 0xB3);
+		addReadRegToBuffer(0x200);
+		
+		addReadRegToBuffer(0x11);
+
+		sendBuffer();
+		
+		recvBuffer(5);
+		System.out.format("regs: %x %x %x %x %x\n", buffer.get(0), buffer.get(1), buffer.get(2), buffer.get(3), buffer.get(4));
+		*/
+	}
+	
+	private void setGPIOAndWait(int val, int dir) throws D2XXException {
+		clearBuffer();
+		buffer.put((byte) 0x80 );
+		buffer.put((byte) val );
+		buffer.put((byte) dir );
+
+		sendBuffer();
+
+		try {
+			Thread.sleep(10);
+		} catch (InterruptedException e) {
+		}
+	}
+
+	private void outputGPIO(int idx) throws D2XXException {
+		clearBuffer();
+		buffer.put((byte) 0x81 );
+		sendBuffer();
+		
+		recvBuffer(1);
+		System.out.printf("ReadGPIO [%d] = %x\n", idx, buffer.get(0));
+	}
+
+	private void initGPIO() throws D2XXException {
+		clearBuffer();
+		
+		// Set up the Hi-Speed specific commands for the FTx232H
+		buffer.put((byte) 0x8A ); // Use 60MHz master clock (disable divide by 5)
+		buffer.put((byte) 0x97 ); // Turn off adaptive clocking (may be needed for ARM)
+		buffer.put((byte) 0x8D ); // Disable three-phase clocking
+
+		
+		// Set TCK frequency
+		// TCK = 60MHz /((1 + [(1 +0xValueH*256) OR 0xValueL])*2)
+		buffer.put((byte) 0x86 );	// Command to set clock divisor
+		buffer.put((byte) 1 );	// Set 0xValueL of clock divisor (15 MHz)
+		buffer.put((byte) 0 ); // Set 0xValueH of clock divisor  (15 MHz)
+		
+		
+		// Set initial states of the MPSSE interface
+		// 		- low byte, both pin directions and output values
+		// 		Pin name 	Signal	Direction 	Config 	Initial State	Config
+		// 		BDBUS0 		TCK/SK	output		1		low				0
+		// 		BDBUS1		TDI/DO	output		1		low				0
+		//		BDBUS2		TDO/DI	input		0						0
+		//		BDBUS3		TMS/CS	output		1		high			1
+		//		BDBUS4 		GPIOL0 	input 		0 			 			0
+		//		BDBUS5		GPIOL1 	input 		0 						0
+		//		BDBUS6		GPIOL2 	input 		0 		 				0
+		//		BDBUS7		GPIOL3 	input 		0 			 			0
+		buffer.put((byte) 0x80 ); // Configure data bits low-byte of MPSSE port
+		buffer.put((byte) 0x08 ); // Initial state config above
+		buffer.put((byte) 0x0B ); // Direction config above
+		
+		// Note that since the data are clocked on the falling edge, inital clock state of low is selected. Clocks will be generated as low-high-low.
+		// In this case, data changes on the falling edge to give it enough time to have it available at the device, which will accept data *into* the target device
+		// on the rising edge. The input from the device works vice-versa. The device clocks the data on the falling edge and we receive them on the rising edge.
+
+		// Set initial states of the MPSSE interface
+		// 		- high byte, both pin directions and output values
+		// 		Pin name 	Signal 	Direction 	Config	Initial State Config
+		// 		BCBUS0 		GPIOH0 	input 		0 					0
+		// 		BCBUS1 		GPIOH1 	output 		1 		low			0
+		// 		BCBUS2 		GPIOH2 	input 		0 					0
+		// 		BCBUS3 		GPIOH3 	input 		0 					0
+		// 		BCBUS4 		GPIOH4 	input 		0 					0
+		// 		BCBUS5 		GPIOH5 	input 		0 					0
+		// 		BCBUS6 		GPIOH6 	input 		0 					0
+		// 		BCBUS7 		GPIOH7 	input 		0 					0
+		buffer.put((byte) 0x82 );
+		buffer.put((byte) 0x00 );	// Initial state config above
+		buffer.put((byte) 0x02 );	// Direction config above
+
+		sendBuffer();
+
+		try {
+			Thread.sleep(10);
+		} catch (InterruptedException e) {
+		}
+		
+		// Release BCBUS1 - RESET#
+		buffer.put((byte) 0x82 );
+		buffer.put((byte) 0x02 );	
+		buffer.put((byte) 0x02 );	
+
+		sendBuffer();
+
+		try {
+			Thread.sleep(10);
+		} catch (InterruptedException e) {
+		}
+	}
+	
+	private void clearBuffer() {
+		buffer.clear();
+	}
+	
+	private void sendBuffer() throws D2XXException {
+		buffer.flip();
+		d2xx.writeAll(buffer);
+		buffer.clear();
+	}
+	
+	private void recvBuffer(int len) throws D2XXException {
+		buffer.clear();
+		buffer.limit(len);
+		d2xx.readAll(buffer);
+	}
+	
+	private void addLowerCSToBuffer() {
+		buffer.put((byte) 0x80 ); // Lower CS
+		buffer.put((byte) 0x00 );
+		buffer.put((byte) 0x0B );		
+	}
+	
+	private void addRaiseCSToBuffer() {
+		buffer.put((byte) 0x80 ); // Raise CS
+		buffer.put((byte) 0x08 );
+		buffer.put((byte) 0x0B );		
+	}
+	
+	private void addWriteRegToBuffer(int reg, int val) {
+		addLowerCSToBuffer();
+		
+		buffer.put((byte) 0x11 ); // Clock Data Bytes Out on falling clock edge MSB first (no read) 
+		
+		if (reg < 0x40) {
+			buffer.put((byte) 1 );  // LengthL (2 bytes) 
+			buffer.put((byte) 0 ); // LengthH
+			
+			buffer.put((byte) ((reg << 1) | 0x01) );
+			buffer.put((byte) val );
+		} else {
+			assert(reg < 0x400);
+			
+			buffer.put((byte) 2 );  // LengthL (3 bytes) 
+			buffer.put((byte) 0 ); // LengthH
+			
+			buffer.put((byte) ((reg >> 3) | 0x80) );
+			buffer.put((byte) (((reg & 0x7) << 5) | 0x10) );
+			buffer.put((byte) val );			
+		}
+		
+		addRaiseCSToBuffer();
+	}
+
+	private void addReadRegToBuffer(int reg) {
+		addLowerCSToBuffer();
+		
+		buffer.put((byte) 0x11 ); // Clock Data Bytes Out on falling clock edge MSB first (no read) 
+		
+		if (reg < 0x40) {
+			buffer.put((byte) 0 );  // LengthL (1 bytes) 
+			buffer.put((byte) 0 ); // LengthH
+			
+			buffer.put((byte) (reg << 1) );
+		} else {
+			assert(reg < 0x400);
+			
+			buffer.put((byte) 1 );  // LengthL (2 bytes) 
+			buffer.put((byte) 0 ); // LengthH
+			
+			buffer.put((byte) ((reg >> 3) | 0x80) );
+			buffer.put((byte) ((reg & 0x7) << 5) );
+		}
+
+		buffer.put((byte) 0x20 ); // Clock Data Bytes In on rising clock edge MSB first (no write)
+		buffer.put((byte) 0 );  // LengthL (1 bytes) 
+		buffer.put((byte) 0 ); // LengthH
+
+		addRaiseCSToBuffer();
 	}
 	
 	private void writeReg(int reg, int val) throws D2XXException {
-		int status;
-		
-		buffer.rewind();
-		
-		int sizeToTransfer;
-		
-		// Set CS cmd
-		// Clock data cmd
-		// LengthL
-		// LengthH
-		
-		if (reg < 0x40) {
-			buffer.put((byte)((reg << 1) | 0x01));
-			buffer.put((byte)val);
-		} else {
-			assert(reg < 0x400);
-			
-			buffer.put((byte)((reg >> 3) | 0x80));
-			buffer.put((byte)(((reg & 0x7) << 5) | 0x10));
-			buffer.put((byte)val);			
-		}
-
-		// Release CS cmd
-		
-		buffer.flip();
-		
-		d2xx.write(buffer);
-
-		while (buffer.position() != buffer.limit()) {
-			System.println("writeReg [cont]");
-			d2xx.write(buffer);
-		}
+		clearBuffer();
+		addWriteRegToBuffer(reg, val);
+		sendBuffer();
 	}
 	
 	private int readReg(int reg) throws D2XXException {
-/*
-		int status;
+		clearBuffer();
+		addReadRegToBuffer(reg);
+		sendBuffer();
 		
-		buffer.rewind();
-		
-		int sizeToTransfer;
-		
-		if (reg < 0x40) {
-			buffer.put((byte)((reg << 1) | 0x01));
-			sizeToTransfer = 1;
-		} else {
-			assert(reg < 0x400);
-			
-			buffer.put((byte)((reg >> 3) | 0x80));
-			buffer.put((byte)(((reg & 0x7) << 5) | 0x10));
-			sizeToTransfer = 2;
-		}
-		
-		status = SPI.SPI_Write(ftHandle, buffer, sizeToTransfer, sizeTransferedByRef, SPI.SPI_TRANSFER_OPTIONS_SIZE_IN_BYTES | SPI.SPI_TRANSFER_OPTIONS_CHIPSELECT_ENABLE);
-		if (status != SPI.FT_OK) {
-			throw new MRF24J40Exception("Call returned with status " + status + ".");
-		}
+		recvBuffer(1);
 
-		if (sizeTransferedByRef.getValue() != sizeToTransfer) {
-			throw new MRF24J40Exception("Only " + sizeTransferedByRef.getValue() + " bytes out of " + sizeToTransfer + " send.");
-		}
-		
-		status = SPI.SPI_Read(ftHandle, buffer, 1, sizeTransferedByRef, SPI.SPI_TRANSFER_OPTIONS_SIZE_IN_BYTES | SPI.SPI_TRANSFER_OPTIONS_CHIPSELECT_DISABLE);
-		if (status != SPI.FT_OK) {
-			throw new MRF24J40Exception("Call returned with status " + status + ".");
-		}		
-
-		if (sizeTransferedByRef.getValue() != 1) {
-			throw new MRF24J40Exception("Received " + sizeTransferedByRef.getValue() + " bytes instead of 1.");
-		}
-		
-		return buffer.get(0);
-*/
-		return 0;
+		return buffer.get(0) & 0xFF;
 	}
 	
 	public void reset() throws D2XXException {
-		/* Reset the MRF24J40 chip 
-		status = SPI.FT_WriteGPIO(ftHandle, (byte)0x02, (byte)0); // BCBUS1 - RESET#
-		if (status != SPI.FT_OK) {
-			throw new MRF24J40Exception("Call returned with status " + status + ".");
-		}
-
-		try {
-			Thread.sleep(5);
-		} catch (InterruptedException e) {
-			throw new MRF24J40Exception(e);
-		}
-		
-		status = SPI.FT_WriteGPIO(ftHandle, (byte)0x02, (byte)1); // BCBUS1 - RESET#
-		if (status != SPI.FT_OK) {
-			throw new MRF24J40Exception("Call returned with status " + status + ".");
-		}
-
-		try {
-			Thread.sleep(5);
-		} catch (InterruptedException e) {
-			throw new MRF24J40Exception(e);
-		}
-		*/
+		clearBuffer();
 
 		// 1. SOFTRST (0x2A) = 0x07 – Perform a software Reset. The bits will be automatically cleared to ‘0’ by hardware.		
-		writeReg(SOFTRST, 0x07);
+		addWriteRegToBuffer(SOFTRST, 0x07);
 
 		// 2. PACON2 (0x18) = 0x98 – Initialize FIFOEN = 1 and TXONTS = 0x6.
-		writeReg(PACON2, 0x98);
+		addWriteRegToBuffer(PACON2, 0x98);
 
 		// 3. TXSTBL (0x2E) = 0x95 – Initialize RFSTBL = 0x9.
-		writeReg(TXSTBL, 0x95);
+		addWriteRegToBuffer(TXSTBL, 0x95);
 		
 		// 4. RFCON0 (0x200) = 0x03 – Initialize RFOPT = 0x03.
-		writeReg(RFCON0, 0x03);
+		addWriteRegToBuffer(RFCON0, 0x03);
 		
 		// 5. RFCON1 (0x201) = 0x01 – Initialize VCOOPT = 0x02.
-		writeReg(RFCON1, 0x01);
+		addWriteRegToBuffer(RFCON1, 0x01);
 		
 		// 6. RFCON2 (0x202) = 0x80 – Enable PLL (PLLEN = 1).
-		writeReg(RFCON2, 0x80);
+		addWriteRegToBuffer(RFCON2, 0x80);
 		
 		// 7. RFCON6 (0x206) = 0x90 – Initialize TXFIL = 1 and 20MRECVR = 1.
-		writeReg(RFCON6, 0x90);
+		addWriteRegToBuffer(RFCON6, 0x90);
 		
 		// 8. RFCON7 (0x207) = 0x80 – Initialize SLPCLKSEL = 0x2 (100 kHz Internal oscillator).
-		writeReg(RFCON7, 0x80);
+		addWriteRegToBuffer(RFCON7, 0x80);
 		
 		// 9. RFCON8 (0x208) = 0x10 – Initialize RFVCO = 1.
-		writeReg(RFCON8, 0x10);
+		addWriteRegToBuffer(RFCON8, 0x10);
 		
 		// 10. SLPCON1 (0x220) = 0x21 – Initialize CLKOUTEN = 1 and SLPCLKDIV = 0x01.
-		writeReg(SLPCON1, 0x21);
+		addWriteRegToBuffer(SLPCON1, 0x21);
 
 		// Configuration for nonbeacon-enabled devices (see Section 3.8 “Beacon-Enabled and Nonbeacon-Enabled Networks”):
 		// 11. BBREG2 (0x3A) = 0x80 – Set CCA mode to ED.
-		writeReg(BBREG2, 0x80);
+		addWriteRegToBuffer(BBREG2, 0x80);
 
 		// 12. CCAEDTH = 0x60 – Set CCA ED threshold.
-		writeReg(CCAEDTH, 0x60);
+		addWriteRegToBuffer(CCAEDTH, 0x60);
 
 		// 13. BBREG6 (0x3E) = 0x40 – Set appended RSSI value to RXFIFO.
-		writeReg(BBREG6, 0x40);
+		addWriteRegToBuffer(BBREG6, 0x40);
 
 		// 14. Enable interrupts – See Section 3.3 “Interrupts”.
-		writeReg(INTCON, 0xF6); // RXIE and TXNIE interrupts enabled
+		addWriteRegToBuffer(INTCON, 0xF6); // RXIE and TXNIE interrupts enabled
 
 		// 15. Set channel – See Section 3.4 “Channel Selection”.
-		writeReg(RFCON0, 0x00 | 0x03); // Channel 11 .. 0x00 (up to 26 .. 0xF0), note that 0x03 must still be present to keep RFOPT = 0x03 
+		addWriteRegToBuffer(RFCON0, 0x00 | 0x03); // Channel 11 .. 0x00 (up to 26 .. 0xF0), note that 0x03 must still be present to keep RFOPT = 0x03 
 		
 		// 16. Set transmitter power - See “REGISTER 2-62: RF CONTROL 3 REGISTER (ADDRESS: 0x203)”.
-		writeReg(RFCON3, 0x40); // -10dB
+		addWriteRegToBuffer(RFCON3, 0x40); // -10dB
 		
 		// 17. RFCTL (0x36) = 0x04 – Reset RF state machine.
-		writeReg(RFCTL, 0x04);
+		addWriteRegToBuffer(RFCTL, 0x04);
 
 		// 18. RFCTL (0x36) = 0x00.
-		writeReg(RFCTL, 0x00);
+		addWriteRegToBuffer(RFCTL, 0x00);
+		
+		sendBuffer();
 
 		// 19. Delay at least 192 μs.
+		try {
+			Thread.sleep(5);
+		} catch (InterruptedException e) {
+			throw new D2XXException(e);
+		}
+		
+		// Configuring Nonbeacon-Enabled Device
+		// 1.Clear the PANCOORD (RXMCR 0x00<3>) bit = 0 to configure as device.
+		// + Set promiscuous Mode bit
+		addWriteRegToBuffer(RXMCR, 0x01);
+		
+		// 2.Clear the SLOTTED (TXMCR 0x11<5>) bit = 0 to use Unslotted CSMA-CA mode.
+		addWriteRegToBuffer(TXMCR, 0x1C);
+		
+		sendBuffer();
+	}
+	
+	public void setChannel(int channelNo) throws D2XXException {
+		// Set channel – See Section 3.4 “Channel Selection”.
+		addWriteRegToBuffer(RFCON0, (channelNo << 4) | 0x03);  
+		
+		// RFCTL (0x36) = 0x04 – Reset RF state machine.
+		addWriteRegToBuffer(RFCTL, 0x04);
+
+		// RFCTL (0x36) = 0x00.
+		addWriteRegToBuffer(RFCTL, 0x00);
+		
+		sendBuffer();
+
+		// Delay at least 192 μs.
 		try {
 			Thread.sleep(1);
 		} catch (InterruptedException e) {
 			throw new D2XXException(e);
-		}		
-
-		// Configuring Nonbeacon-Enabled Device
-		// 1.Clear the PANCOORD (RXMCR 0x00<3>) bit = 0 to configure as device.
-		// + Set promiscuous Mode bit
-		writeReg(RXMCR, 0x01);
-		
-		// 2.Clear the SLOTTED (TXMCR 0x11<5>) bit = 0 to use Unslotted CSMA-CA mode.
-		writeReg(TXMCR, 0x1C);
+		}
+	}
+	
+	public int getChannel() throws D2XXException {
+		return readReg(RFCON0) >> 4;  		
 	}
 	
 	public Packet recvPacket() throws D2XXException {
@@ -307,19 +449,30 @@ public class MRF24J40 {
 		if ((intstat & 0x08) == 0x08) {
 			Packet packet = new Packet();
 			
-			writeReg(BBREG1, 0x04); // Disable RX
+			clearBuffer();
+			addWriteRegToBuffer(BBREG1, 0x04); // Disable RX
+			addReadRegToBuffer(RXFIFO); // Read length
+			sendBuffer();
+			recvBuffer(1);
 			
-			int len = readReg(RXFIFO);
+			int len = buffer.get(0);
+			
+			clearBuffer();
+			for (int idx = 0; idx < len; idx++) {
+				addReadRegToBuffer(RXFIFO + 1 + idx);
+			}
+			addWriteRegToBuffer(BBREG1, 0x00); // Enable RX			
+			sendBuffer();
+			recvBuffer(len);
+			
+			buffer.flip();
 			packet.data = new int[len - 2];
-			
 			for (int idx = 0; idx < len - 2; idx++) {
-				packet.data[idx] = readReg(RXFIFO + 1 + idx);
+				packet.data[idx] = buffer.get();
 			}
 			
-			packet.lqi = readReg(RXFIFO + len + 2);
-			packet.rssi = readReg(RXFIFO + len + 2);
-			
-			writeReg(BBREG1, 0x00); // Enable RX
+			packet.lqi = buffer.get();
+			packet.rssi = buffer.get();
 			
 			return packet;
 		} else {

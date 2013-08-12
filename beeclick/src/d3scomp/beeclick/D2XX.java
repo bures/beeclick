@@ -42,11 +42,34 @@ public class D2XX {
 		ftHandle = 0;
 	}
 	
+	public void writeAll(ByteBuffer buffer) throws D2XXException {
+//		System.out.format("W[%d] ", buffer.limit() - buffer.position());
+		
+		while (write(buffer) > 0) {
+//			System.out.print(".");
+		}
+		
+//		System.out.println();
+	}
+	
+	public void readAll(ByteBuffer buffer) throws D2XXException {
+//		System.out.format("R[%d] ", buffer.limit() - buffer.position());
+		
+		while (read(buffer) > 0) {
+//			System.out.print(".");
+		}
+		
+//		System.out.println();
+	}
+	
 	public int write(ByteBuffer buffer) throws D2XXException {
 		assert(buffer.isDirect());
 		
-		ByteBuffer slicedBuf = buffer.slice();
+		if (buffer.limit() == buffer.position())
+			return 0;
 		
+		ByteBuffer slicedBuf = buffer.slice();
+
 		int bytesWritten = _write(ftHandle, slicedBuf, slicedBuf.limit());
 		
 		if (bytesWritten < 0) {
@@ -60,6 +83,9 @@ public class D2XX {
 	
 	public int read(ByteBuffer buffer) throws D2XXException {
 		assert(buffer.isDirect());
+		
+		if (buffer.limit() == buffer.position())
+			return 0;
 		
 		ByteBuffer slicedBuf = buffer.slice();
 
