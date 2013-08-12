@@ -1,0 +1,5 @@
+dist: beeclick-ftdi.dll
+	cp beeclick-ftdi.dll ../../beeclick
+
+javah:
+	"/c/Program Files (x86)/Java/jdk1.7.0_25/bin/javah.exe" -d ../src -cp ../../beeclick/bin d3scomp.beeclick.D2XX 
