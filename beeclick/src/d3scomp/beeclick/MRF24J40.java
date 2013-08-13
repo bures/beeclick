@@ -1,11 +1,18 @@
+/*
+ * MRF24J40.java
+ *
+ *  Created on: 12.8.2013
+ *      Author: Tomas Bures
+ */
+
 package d3scomp.beeclick;
 
 import java.nio.ByteBuffer;
-import java.util.Arrays;
 
 public class MRF24J40 {
-	public static class Packet {
-		int[] data;
+	public static class RXPacket {
+		ByteBuffer data;
+		int fcs;
 		int lqi;
 		int rssi;
 	}
@@ -119,10 +126,24 @@ public class MRF24J40 {
 	public static int UPNONCE12 = 0x24C;
 	
 	public static int RXFIFO = 0x300;
+	public static int TXNFIFO = 0x000;
 	
-	private ByteBuffer buffer = ByteBuffer.allocateDirect(65536);
+	private ByteBuffer mpsseBuf = ByteBuffer.allocateDirect(65536);
+	
 	private D2XX d2xx;
 	
+	private int panID, shortAddr, channel;
+	private byte lastINTSTAT;
+	
+	static public enum TXState {
+		NOTHING_SENT,
+		PENDING,
+		SUCCESSFUL,
+		FAILED
+	}
+	
+	private TXState txState = TXState.NOTHING_SENT;
+		
 	public MRF24J40() throws D2XXException {
 		d2xx = new D2XX();
 		initGPIO();
@@ -152,43 +173,20 @@ public class MRF24J40 {
 		*/
 	}
 	
-	private void setGPIOAndWait(int val, int dir) throws D2XXException {
-		clearBuffer();
-		buffer.put((byte) 0x80 );
-		buffer.put((byte) val );
-		buffer.put((byte) dir );
-
-		sendBuffer();
-
-		try {
-			Thread.sleep(10);
-		} catch (InterruptedException e) {
-		}
-	}
-
-	private void outputGPIO(int idx) throws D2XXException {
-		clearBuffer();
-		buffer.put((byte) 0x81 );
-		sendBuffer();
-		
-		recvBuffer(1);
-		System.out.printf("ReadGPIO [%d] = %x\n", idx, buffer.get(0));
-	}
-
 	private void initGPIO() throws D2XXException {
 		clearBuffer();
 		
 		// Set up the Hi-Speed specific commands for the FTx232H
-		buffer.put((byte) 0x8A ); // Use 60MHz master clock (disable divide by 5)
-		buffer.put((byte) 0x97 ); // Turn off adaptive clocking (may be needed for ARM)
-		buffer.put((byte) 0x8D ); // Disable three-phase clocking
+		mpsseBuf.put((byte) 0x8A ); // Use 60MHz master clock (disable divide by 5)
+		mpsseBuf.put((byte) 0x97 ); // Turn off adaptive clocking (may be needed for ARM)
+		mpsseBuf.put((byte) 0x8D ); // Disable three-phase clocking
 
 		
 		// Set TCK frequency
 		// TCK = 60MHz /((1 + [(1 +0xValueH*256) OR 0xValueL])*2)
-		buffer.put((byte) 0x86 );	// Command to set clock divisor
-		buffer.put((byte) 1 );	// Set 0xValueL of clock divisor (15 MHz)
-		buffer.put((byte) 0 ); // Set 0xValueH of clock divisor  (15 MHz)
+		mpsseBuf.put((byte) 0x86 );	// Command to set clock divisor
+		mpsseBuf.put((byte) 1 );	// Set 0xValueL of clock divisor (15 MHz)
+		mpsseBuf.put((byte) 0 ); // Set 0xValueH of clock divisor  (15 MHz)
 		
 		
 		// Set initial states of the MPSSE interface
@@ -202,9 +200,9 @@ public class MRF24J40 {
 		//		BDBUS5		GPIOL1 	input 		0 						0
 		//		BDBUS6		GPIOL2 	input 		0 		 				0
 		//		BDBUS7		GPIOL3 	input 		0 			 			0
-		buffer.put((byte) 0x80 ); // Configure data bits low-byte of MPSSE port
-		buffer.put((byte) 0x08 ); // Initial state config above
-		buffer.put((byte) 0x0B ); // Direction config above
+		mpsseBuf.put((byte) 0x80 ); // Configure data bits low-byte of MPSSE port
+		mpsseBuf.put((byte) 0x08 ); // Initial state config above
+		mpsseBuf.put((byte) 0x0B ); // Direction config above
 		
 		// Note that since the data are clocked on the falling edge, inital clock state of low is selected. Clocks will be generated as low-high-low.
 		// In this case, data changes on the falling edge to give it enough time to have it available at the device, which will accept data *into* the target device
@@ -221,9 +219,9 @@ public class MRF24J40 {
 		// 		BCBUS5 		GPIOH5 	input 		0 					0
 		// 		BCBUS6 		GPIOH6 	input 		0 					0
 		// 		BCBUS7 		GPIOH7 	input 		0 					0
-		buffer.put((byte) 0x82 );
-		buffer.put((byte) 0x00 );	// Initial state config above
-		buffer.put((byte) 0x02 );	// Direction config above
+		mpsseBuf.put((byte) 0x82 );
+		mpsseBuf.put((byte) 0x00 );	// Initial state config above
+		mpsseBuf.put((byte) 0x02 );	// Direction config above
 
 		sendBuffer();
 
@@ -233,9 +231,9 @@ public class MRF24J40 {
 		}
 		
 		// Release BCBUS1 - RESET#
-		buffer.put((byte) 0x82 );
-		buffer.put((byte) 0x02 );	
-		buffer.put((byte) 0x02 );	
+		mpsseBuf.put((byte) 0x82 );
+		mpsseBuf.put((byte) 0x02 );	
+		mpsseBuf.put((byte) 0x02 );	
 
 		sendBuffer();
 
@@ -246,54 +244,69 @@ public class MRF24J40 {
 	}
 	
 	private void clearBuffer() {
-		buffer.clear();
+		mpsseBuf.clear();
 	}
 	
 	private void sendBuffer() throws D2XXException {
-		buffer.flip();
-		d2xx.writeAll(buffer);
-		buffer.clear();
+		mpsseBuf.flip();
+		d2xx.writeAll(mpsseBuf);
+		mpsseBuf.clear();
 	}
 	
 	private void recvBuffer(int len) throws D2XXException {
-		buffer.clear();
-		buffer.limit(len);
-		d2xx.readAll(buffer);
+		mpsseBuf.clear();
+		mpsseBuf.limit(len);
+		d2xx.readAll(mpsseBuf);
 	}
 	
 	private void addLowerCSToBuffer() {
-		buffer.put((byte) 0x80 ); // Lower CS
-		buffer.put((byte) 0x00 );
-		buffer.put((byte) 0x0B );		
+		mpsseBuf.put((byte) 0x80 ); // Lower CS
+		mpsseBuf.put((byte) 0x00 );
+		mpsseBuf.put((byte) 0x0B );		
 	}
 	
 	private void addRaiseCSToBuffer() {
-		buffer.put((byte) 0x80 ); // Raise CS
-		buffer.put((byte) 0x08 );
-		buffer.put((byte) 0x0B );		
+		mpsseBuf.put((byte) 0x80 ); // Raise CS
+		mpsseBuf.put((byte) 0x08 );
+		mpsseBuf.put((byte) 0x0B );		
 	}
 	
 	private void addWriteRegToBuffer(int reg, int val) {
 		addLowerCSToBuffer();
 		
-		buffer.put((byte) 0x11 ); // Clock Data Bytes Out on falling clock edge MSB first (no read) 
+		mpsseBuf.put((byte) 0x11 ); // Clock Data Bytes Out on falling clock edge MSB first (no read) 
 		
 		if (reg < 0x40) {
-			buffer.put((byte) 1 );  // LengthL (2 bytes) 
-			buffer.put((byte) 0 ); // LengthH
+			mpsseBuf.put((byte) 1 );  // LengthL (2 bytes) 
+			mpsseBuf.put((byte) 0 );  // LengthH
 			
-			buffer.put((byte) ((reg << 1) | 0x01) );
-			buffer.put((byte) val );
+			mpsseBuf.put((byte) ((reg << 1) | 0x01) );
+			mpsseBuf.put((byte) val );
 		} else {
 			assert(reg < 0x400);
 			
-			buffer.put((byte) 2 );  // LengthL (3 bytes) 
-			buffer.put((byte) 0 ); // LengthH
+			mpsseBuf.put((byte) 2 );  // LengthL (3 bytes) 
+			mpsseBuf.put((byte) 0 );  // LengthH
 			
-			buffer.put((byte) ((reg >> 3) | 0x80) );
-			buffer.put((byte) (((reg & 0x7) << 5) | 0x10) );
-			buffer.put((byte) val );			
+			mpsseBuf.put((byte) ((reg >> 3) | 0x80) );
+			mpsseBuf.put((byte) (((reg & 0x7) << 5) | 0x10) );
+			mpsseBuf.put((byte) val );			
 		}
+		
+		addRaiseCSToBuffer();
+	}
+
+	private void addWriteLongRegToBuffer(int reg, int val) {
+		addLowerCSToBuffer();
+		
+		mpsseBuf.put((byte) 0x11 ); // Clock Data Bytes Out on falling clock edge MSB first (no read) 
+		
+		mpsseBuf.put((byte) 2 );  // LengthL (3 bytes) 
+		mpsseBuf.put((byte) 0 );  // LengthH
+			
+		mpsseBuf.put((byte) ((reg >> 3) | 0x80) );
+		mpsseBuf.put((byte) (((reg & 0x7) << 5) | 0x10) );
+		mpsseBuf.put((byte) val );			
 		
 		addRaiseCSToBuffer();
 	}
@@ -301,30 +314,48 @@ public class MRF24J40 {
 	private void addReadRegToBuffer(int reg) {
 		addLowerCSToBuffer();
 		
-		buffer.put((byte) 0x11 ); // Clock Data Bytes Out on falling clock edge MSB first (no read) 
+		mpsseBuf.put((byte) 0x11 ); // Clock Data Bytes Out on falling clock edge MSB first (no read) 
 		
 		if (reg < 0x40) {
-			buffer.put((byte) 0 );  // LengthL (1 bytes) 
-			buffer.put((byte) 0 ); // LengthH
+			mpsseBuf.put((byte) 0 );  // LengthL (1 bytes) 
+			mpsseBuf.put((byte) 0 );  // LengthH
 			
-			buffer.put((byte) (reg << 1) );
+			mpsseBuf.put((byte) (reg << 1) );
 		} else {
 			assert(reg < 0x400);
 			
-			buffer.put((byte) 1 );  // LengthL (2 bytes) 
-			buffer.put((byte) 0 ); // LengthH
+			mpsseBuf.put((byte) 1 );  // LengthL (2 bytes) 
+			mpsseBuf.put((byte) 0 );  // LengthH
 			
-			buffer.put((byte) ((reg >> 3) | 0x80) );
-			buffer.put((byte) ((reg & 0x7) << 5) );
+			mpsseBuf.put((byte) ((reg >> 3) | 0x80) );
+			mpsseBuf.put((byte) ((reg & 0x7) << 5) );
 		}
 
-		buffer.put((byte) 0x20 ); // Clock Data Bytes In on rising clock edge MSB first (no write)
-		buffer.put((byte) 0 );  // LengthL (1 bytes) 
-		buffer.put((byte) 0 ); // LengthH
+		mpsseBuf.put((byte) 0x20 ); // Clock Data Bytes In on rising clock edge MSB first (no write)
+		mpsseBuf.put((byte) 0 );  // LengthL (1 bytes) 
+		mpsseBuf.put((byte) 0 );  // LengthH
 
 		addRaiseCSToBuffer();
 	}
 	
+	private void addReadLongRegToBuffer(int reg) {
+		addLowerCSToBuffer();
+		
+		mpsseBuf.put((byte) 0x11 ); // Clock Data Bytes Out on falling clock edge MSB first (no read) 
+		
+		mpsseBuf.put((byte) 1 );  // LengthL (2 bytes) 
+		mpsseBuf.put((byte) 0 );  // LengthH
+			
+		mpsseBuf.put((byte) ((reg >> 3) | 0x80) );
+		mpsseBuf.put((byte) ((reg & 0x7) << 5) );
+
+		mpsseBuf.put((byte) 0x20 ); // Clock Data Bytes In on rising clock edge MSB first (no write)
+		mpsseBuf.put((byte) 0 );  // LengthL (1 bytes) 
+		mpsseBuf.put((byte) 0 );  // LengthH
+
+		addRaiseCSToBuffer();
+	}
+
 	private void writeReg(int reg, int val) throws D2XXException {
 		clearBuffer();
 		addWriteRegToBuffer(reg, val);
@@ -338,7 +369,7 @@ public class MRF24J40 {
 		
 		recvBuffer(1);
 
-		return buffer.get(0) & 0xFF;
+		return mpsseBuf.get(0) & 0xFF;
 	}
 	
 	public void reset() throws D2XXException {
@@ -403,7 +434,7 @@ public class MRF24J40 {
 
 		// 19. Delay at least 192 μs.
 		try {
-			Thread.sleep(5);
+			Thread.sleep(2);
 		} catch (InterruptedException e) {
 			throw new D2XXException(e);
 		}
@@ -419,7 +450,176 @@ public class MRF24J40 {
 		sendBuffer();
 	}
 	
+	private boolean isINTSTAT(int mask) throws D2XXException {
+		if ((lastINTSTAT & mask) == mask) {
+			lastINTSTAT = (byte)(lastINTSTAT & (~mask));
+			return true;
+		} else {
+			lastINTSTAT |= readReg(INTSTAT);
+
+			if ((lastINTSTAT & mask) == mask) {
+				lastINTSTAT = (byte)(lastINTSTAT & (~mask));
+				return true;
+			} else {
+				return false;
+			}
+		}
+	}
+	
+	public RXPacket recvPacket() throws D2XXException {
+		if (isINTSTAT(0x08)) {
+			RXPacket packet = new RXPacket();
+			
+			clearBuffer();
+			addWriteRegToBuffer(BBREG1, 0x04); // Disable RX
+			addReadRegToBuffer(RXFIFO); // Read length
+			sendBuffer();
+			recvBuffer(1);
+			
+			int len = mpsseBuf.get(0);
+			
+			clearBuffer();
+			for (int idx = 0; idx < len + 2; idx++) {
+				addReadLongRegToBuffer(RXFIFO + 1 + idx);
+			}
+			addWriteRegToBuffer(BBREG1, 0x00); // Enable RX			
+			sendBuffer();
+			recvBuffer(len + 2);
+			
+			mpsseBuf.flip();
+			
+			packet.data = ByteBuffer.allocateDirect(len - 2);
+			for (int idx = 0; idx < len - 2; idx++) {
+				packet.data.put(mpsseBuf.get());
+			}
+			
+			packet.data.flip();
+
+			packet.fcs = (mpsseBuf.get() & 0xFF) | ((mpsseBuf.get() & 0xFF) << 8);
+			packet.lqi = mpsseBuf.get() & 0xFF;
+			packet.rssi = mpsseBuf.get() & 0xFF;
+			
+			return packet;
+		} else {
+			return null;
+		}
+	}
+
+	public void broadcastPacket(ByteBuffer data) throws D2XXException {
+		
+		int txReg = TXNFIFO;
+		clearBuffer();
+		
+		addWriteLongRegToBuffer(txReg++, 7); // Header length
+		addWriteLongRegToBuffer(txReg++, 7 + data.remaining()); // Frame length
+		
+		// Frame Control (order low-byte, high-byte; MSb)
+		// =============================================
+		// Source Addressing Mode [15-14] - 0x10 (Short address 16bit)
+		// Frame Version [13-12] - 0x00 (802.15.4-2003)
+		// Dest. Addressing Mode [11-10] - 0x00 (PAN identifier and address fields are not present)
+		// Reserved [9-7]
+		// PAN ID Compression [6] - 0x00 (No PAN ID Compression)
+		// Acknowledgement Request [5] - 0x00 (No acknowledgement requested)
+		// Frame Pending [4] - 0x00 (No Frame Pending)
+		// Security Enabled [3] - 0x00 (No security)
+		// Frame Type [2-0] - 0x01 (Data Frame)
+		addWriteLongRegToBuffer(txReg++, 0x01);
+		addWriteLongRegToBuffer(txReg++, 0x80);
+		
+		addWriteLongRegToBuffer(txReg++, 0x00); // Sequence Number
+
+		addWriteLongRegToBuffer(txReg++, 0xBA); // Source PAN ID (low)
+		addWriteLongRegToBuffer(txReg++, 0xBA); // Source PAN ID (high)
+		
+		addWriteLongRegToBuffer(txReg++, 0x01); // Source Address (low)
+		addWriteLongRegToBuffer(txReg++, 0x00); // Source Address (high)
+		
+		while (data.remaining() > 0) {
+			addWriteLongRegToBuffer(txReg++, data.get());
+		}
+
+		addWriteRegToBuffer(TXNCON, 0x01); // Trigger transmission, set: Frame Pending Status Bit = 0, Activate Indirect Transmission bit = 0, TX Normal FIFO Acknowledgement Request = 0, TX Normal FIFO Security Enabled = 0
+		
+		sendBuffer();
+		
+		txState = TXState.PENDING;
+	} 
+	
+	public TXState getTXState() throws D2XXException {
+		if (txState == TXState.PENDING) {
+			if (isINTSTAT(0x01)) {
+				int txStat = readReg(TXSTAT);
+				
+				if ((txStat & 0x01) == 0x01) {
+					txState = TXState.FAILED;
+				} else {
+					txState = TXState.SUCCESSFUL;
+				}
+			} 
+		}
+	
+		return txState;
+	}
+
+	public void cleanup() {
+		d2xx.close();
+	}
+	
+	public void setPANID(int newPANID) throws D2XXException {
+		panID = newPANID;
+		
+		clearBuffer();
+		addWriteRegToBuffer(PANIDL, newPANID & 0xFF);
+		addWriteRegToBuffer(PANIDH, (newPANID >> 8) & 0xFF);
+		sendBuffer();
+	}
+	
+	public int readPANID() throws D2XXException {
+		clearBuffer();
+		addReadRegToBuffer(PANIDL);
+		addReadRegToBuffer(PANIDH);
+		sendBuffer();
+		
+		recvBuffer(2);
+		
+		panID = ((mpsseBuf.get(1) & 0xFF) << 8) | (mpsseBuf.get(0) & 0xFF);
+		
+		return panID;
+	}
+	
+	public int getPANID() {
+		return panID;
+	}
+	
+	public void setShortAddr(int newShortAddr) throws D2XXException {
+		shortAddr = newShortAddr;
+		
+		clearBuffer();
+		addWriteRegToBuffer(SADRL, newShortAddr & 0xFF);
+		addWriteRegToBuffer(SADRH, (newShortAddr >> 8) & 0xFF);
+		sendBuffer();
+	}
+	
+	public int readShortAddr() throws D2XXException {
+		clearBuffer();
+		addReadRegToBuffer(SADRL);
+		addReadRegToBuffer(SADRH);
+		sendBuffer();
+		
+		recvBuffer(2);
+		
+		shortAddr = ((mpsseBuf.get(1) & 0xFF) << 8) | (mpsseBuf.get(0) & 0xFF);
+		return shortAddr;
+	}	
+	
+	public int getShortAddr() {
+		return shortAddr;
+	}
+
 	public void setChannel(int channelNo) throws D2XXException {
+		channel = channelNo;
+		
 		// Set channel – See Section 3.4 “Channel Selection”.
 		addWriteRegToBuffer(RFCON0, (channelNo << 4) | 0x03);  
 		
@@ -439,48 +639,14 @@ public class MRF24J40 {
 		}
 	}
 	
-	public int getChannel() throws D2XXException {
-		return readReg(RFCON0) >> 4;  		
-	}
-	
-	public Packet recvPacket() throws D2XXException {
-		int intstat = readReg(INTSTAT);
+	public int readChannel() throws D2XXException {
+		channel = readReg(RFCON0) >> 4;
 		
-		if ((intstat & 0x08) == 0x08) {
-			Packet packet = new Packet();
-			
-			clearBuffer();
-			addWriteRegToBuffer(BBREG1, 0x04); // Disable RX
-			addReadRegToBuffer(RXFIFO); // Read length
-			sendBuffer();
-			recvBuffer(1);
-			
-			int len = buffer.get(0);
-			
-			clearBuffer();
-			for (int idx = 0; idx < len; idx++) {
-				addReadRegToBuffer(RXFIFO + 1 + idx);
-			}
-			addWriteRegToBuffer(BBREG1, 0x00); // Enable RX			
-			sendBuffer();
-			recvBuffer(len);
-			
-			buffer.flip();
-			packet.data = new int[len - 2];
-			for (int idx = 0; idx < len - 2; idx++) {
-				packet.data[idx] = buffer.get();
-			}
-			
-			packet.lqi = buffer.get();
-			packet.rssi = buffer.get();
-			
-			return packet;
-		} else {
-			return null;
-		}
+		return channel;
 	}
 	
-	public void cleanup() {
-		d2xx.close();
+	public int getChannel() {
+		return channel;
 	}
+	
 }

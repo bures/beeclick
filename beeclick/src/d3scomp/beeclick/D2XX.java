@@ -1,3 +1,10 @@
+/*
+ * D2XX.java
+ *
+ *  Created on: 12.8.2013
+ *      Author: Tomas Bures
+ */
+
 package d3scomp.beeclick;
 
 import java.nio.ByteBuffer;
@@ -9,26 +16,16 @@ public class D2XX {
 		System.loadLibrary("beeclick-ftdi");
 	}
 	
-	static private native int _getLibraryVersion();
-	static private native int _init();
+	static public native void _printSummary();
 	static private native long _open();
 	static private native int _close(long handle);
 	static private native int _write(long handle, ByteBuffer buffer, int numBytesToWrite);
 	static private native int _read(long handle, ByteBuffer buffer, int numBytesToRead);
-	static private native int _readAvailable(long handle);
-	
-	static private boolean initialized = false;
+	static private native int _getNumOfBytesAvailableToRead(long handle);
 	
 	private long ftHandle;
 
 	public D2XX() throws D2XXException {
-		if (initialized == false) {
-			int result = _init();
-			if (result != 0) {
-				throw new D2XXException("Cannot initialize the D2XX stack.");
-			}
-		}
-		
 		ftHandle = _open();
 		if (ftHandle == 0) {
 			throw new D2XXException("Cannot open a MPSSE port.");
@@ -65,7 +62,7 @@ public class D2XX {
 	public int write(ByteBuffer buffer) throws D2XXException {
 		assert(buffer.isDirect());
 		
-		if (buffer.limit() == buffer.position())
+		if (buffer.remaining() == 0)
 			return 0;
 		
 		ByteBuffer slicedBuf = buffer.slice();
@@ -84,7 +81,7 @@ public class D2XX {
 	public int read(ByteBuffer buffer) throws D2XXException {
 		assert(buffer.isDirect());
 		
-		if (buffer.limit() == buffer.position())
+		if (buffer.remaining() == 0)
 			return 0;
 		
 		ByteBuffer slicedBuf = buffer.slice();

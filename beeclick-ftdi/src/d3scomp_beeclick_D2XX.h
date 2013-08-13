@@ -9,18 +9,10 @@ extern "C" {
 #endif
 /*
  * Class:     d3scomp_beeclick_D2XX
- * Method:    _getLibraryVersion
- * Signature: ()I
+ * Method:    _printSummary
+ * Signature: ()V
  */
-JNIEXPORT jint JNICALL Java_d3scomp_beeclick_D2XX__1getLibraryVersion
-  (JNIEnv *, jclass);
-
-/*
- * Class:     d3scomp_beeclick_D2XX
- * Method:    _init
- * Signature: ()I
- */
-JNIEXPORT jint JNICALL Java_d3scomp_beeclick_D2XX__1init
+JNIEXPORT void JNICALL Java_d3scomp_beeclick_D2XX__1printSummary
   (JNIEnv *, jclass);
 
 /*
@@ -57,10 +49,10 @@ JNIEXPORT jint JNICALL Java_d3scomp_beeclick_D2XX__1read
 
 /*
  * Class:     d3scomp_beeclick_D2XX
- * Method:    _readAvailable
+ * Method:    _getNumOfBytesAvailableToRead
  * Signature: (J)I
  */
-JNIEXPORT jint JNICALL Java_d3scomp_beeclick_D2XX__1readAvailable
+JNIEXPORT jint JNICALL Java_d3scomp_beeclick_D2XX__1getNumOfBytesAvailableToRead
   (JNIEnv *, jclass, jlong);
 
 #ifdef __cplusplus

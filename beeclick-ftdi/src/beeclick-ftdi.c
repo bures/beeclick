@@ -11,18 +11,7 @@
 
 #include "d3scomp_beeclick_D2XX.h"
 
-JNIEXPORT jint JNICALL Java_d3scomp_beeclick_D2XX__1getLibraryVersion(JNIEnv *env, jclass cls) {
-	DWORD libVer;
-
-	FT_GetLibraryVersion(&libVer);
-
-	printf("Library version: %d\n", libVer);
-
-	return (jint)libVer;
-}
-
-JNIEXPORT jint JNICALL Java_d3scomp_beeclick_D2XX__1init(JNIEnv *env, jclass cls) {
-
+JNIEXPORT void JNICALL Java_d3scomp_beeclick_D2XX__1printSummary(JNIEnv *env, jclass cls) {
 	FT_STATUS ftStatus;				// Result of each D2XX call
 	DWORD dwNumDevs;				// The number of devices
 	DWORD dwCount = 0;				// General loop index
@@ -38,12 +27,10 @@ JNIEXPORT jint JNICALL Java_d3scomp_beeclick_D2XX__1init(JNIEnv *env, jclass cls
 	// Get the number of FTDI devices
 	if (ftStatus != FT_OK){					// Did the command execute OK?
 		printf("Error in getting the number of devices\n");
-		return -1; // Exit with error
 	}
 
 	if (dwNumDevs < 1) {					// Exit if we don't see any
 		printf("There are no FTDI devices installed\n");
-		return -1; // Exit with error
 	}
 
 	printf("%d FTDI devices found - the count includes individual ports on a single chip\n", dwNumDevs);
@@ -61,10 +48,11 @@ JNIEXPORT jint JNICALL Java_d3scomp_beeclick_D2XX__1init(JNIEnv *env, jclass cls
 			printf(" Description=%s\n", devInfo[dwCount].Description);
 			printf(" ftHandle=0x%x\n", devInfo[dwCount].ftHandle);
 		}
+	} else {
+		printf("Error when enumerating installed FTDI devices.\n");
 	}
-	free(devInfo);
 
-	return 0;
+	free(devInfo);
 }
 
 JNIEXPORT jlong JNICALL Java_d3scomp_beeclick_D2XX__1open(JNIEnv *env, jclass cls) {
@@ -82,13 +70,62 @@ JNIEXPORT jlong JNICALL Java_d3scomp_beeclick_D2XX__1open(JNIEnv *env, jclass cl
 	DWORD dwNumBytesToRead = 0;		// Number of bytes available to read in the driver's input buffer
 	DWORD dwNumBytesRead = 0;		// Count of actual bytes read - used with FT_Read
 
+	DWORD dwNumDevs;				// The number of devices
+	DWORD dwCount = 0;				// General loop index
+	DWORD dwDeviceToOpen = -1;
+
+	FT_DEVICE_LIST_INFO_NODE *devInfo;
+
+	// -----------------------------------------------------------
+	// Does an FTDI device exist?
+	// -----------------------------------------------------------
+
+	ftStatus = FT_CreateDeviceInfoList(&dwNumDevs);
+
+	// Get the number of FTDI devices
+	if (ftStatus != FT_OK){					// Did the command execute OK?
+		printf("Error in getting the number of devices\n");
+		return 0; // Exit with error
+	}
+
+	if (dwNumDevs < 1) {					// Exit if we don't see any
+		printf("There are no FTDI devices installed\n");
+		return 0; // Exit with error
+	}
+
+	devInfo = (FT_DEVICE_LIST_INFO_NODE*) malloc(	sizeof(FT_DEVICE_LIST_INFO_NODE) * dwNumDevs);
+	ftStatus = FT_GetDeviceInfoList(devInfo, &dwNumDevs);
+	if (ftStatus == FT_OK) {
+		for (dwCount = 0; dwCount < dwNumDevs; dwCount++) {
+			if ((devInfo[dwCount].Flags & 0x01) == 0 && devInfo[dwCount].SerialNumber[0] == 'B' && devInfo[dwCount].SerialNumber[1] == 0) {
+				dwDeviceToOpen = dwCount;
+				break;
+			}
+		}
+
+		free(devInfo);
+
+	} else {
+		printf("Error when enumerating installed FTDI devices.\n");
+		free(devInfo);
+		return 0; // Exit with error
+	}
+
 	// -----------------------------------------------------------
 	// Open the port - For this application note, we'll assume the first device is a
 	// FT2232H or FT4232H. Further checks can be made against the device
 	// descriptions, locations, serial numbers, etc. before opening the port.
 	// -----------------------------------------------------------
 
-	ftStatus = FT_Open(1, &ftHandle);
+	if (dwDeviceToOpen == -1) {
+		printf("There is no suitable free FTDI device.\n");
+		return 0; // Exit with error
+	}
+
+	// printf("Trying to open device no. %d\n", dwDeviceToOpen);
+
+	// TODO: Handle selection between multiple devices. Make sure to select channel B.
+	ftStatus = FT_Open(dwDeviceToOpen, &ftHandle);
 	if (ftStatus != FT_OK) {
 		printf("Open failed with error %d\n", ftStatus);
 		return 0; // Exit with error
@@ -215,7 +252,7 @@ JNIEXPORT jint JNICALL Java_d3scomp_beeclick_D2XX__1close(JNIEnv *env, jclass cl
 		return -1; // Exit with error
 	}
 
-	printf("MPSSE port closed.\n");
+	// printf("MPSSE port closed.\n");
 
 	return 0;
 }
@@ -262,7 +299,7 @@ JNIEXPORT jint JNICALL Java_d3scomp_beeclick_D2XX__1read(JNIEnv *env, jclass cls
 	return (jint)dwBytesRead;
 }
 
-JNIEXPORT jint JNICALL Java_d3scomp_beeclick_D2XX__1readAvailable(JNIEnv *env, jclass cls, jlong handle) {
+JNIEXPORT jint JNICALL Java_d3scomp_beeclick_D2XX__1getNumOfBytesAvailableToRead(JNIEnv *env, jclass cls, jlong handle) {
 	FT_HANDLE ftHandle = (FT_HANDLE)handle;
 	FT_STATUS ftStatus;
 	DWORD dwBytesToRead;

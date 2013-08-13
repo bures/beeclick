@@ -1,3 +1,10 @@
+/*
+ * D2XXException.java
+ *
+ *  Created on: 12.8.2013
+ *      Author: Tomas Bures
+ */
+
 package d3scomp.beeclick;
 
 public class D2XXException extends Exception {
