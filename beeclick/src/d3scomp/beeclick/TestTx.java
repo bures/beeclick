@@ -14,24 +14,27 @@ public class TestTx {
 		
 		System.out.format("Reading info channel=%d panID=%x shortAddr=%x.\n", bee.readChannel(), bee.readPANID(), bee.readShortAddr());
 
-		ByteBuffer data = ByteBuffer.allocateDirect(16);
-		data.put((byte) 0xAB);
-		data.put((byte) 0xCD);
-		data.flip();
-		
-		bee.broadcastPacket(data);
-		
-		MRF24J40.TXState txState;
-		do {
-			try {
-				Thread.sleep(1000);
-			} catch (InterruptedException e) {
-			}
-
-			txState = bee.getTXState();
+		for (int idx = 0; idx < 3; idx++) {
+			ByteBuffer data = ByteBuffer.allocateDirect(16);
+			data.put((byte) 0xAB);
+			data.put((byte) (0xC0 + idx));
+			data.flip();
 			
-			System.out.println(txState);
-		} while (txState == MRF24J40.TXState.PENDING);
+			System.out.format("Sending out a packet [%d]...\n", idx);
+			bee.broadcastPacket(data);
+			
+			MRF24J40.TXState txState;
+			do {
+				try {
+					Thread.sleep(1);
+				} catch (InterruptedException e) {
+				}
+	
+				txState = bee.getTXState();
+				
+				System.out.println("  " + txState);
+			} while (txState == MRF24J40.TXState.PENDING);
+		}
 		
 		bee.cleanup();
 	}

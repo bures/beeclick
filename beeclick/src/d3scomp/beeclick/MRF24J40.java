@@ -8,6 +8,7 @@
 package d3scomp.beeclick;
 
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 
 public class MRF24J40 {
 	public static class RXPacket {
@@ -148,29 +149,6 @@ public class MRF24J40 {
 		d2xx = new D2XX();
 		initGPIO();
 		reset();
-
-		/*
-		clearBuffer();
-
-		addWriteRegToBuffer(0x01, 0xBA);
-		addReadRegToBuffer(0x01);
-		
-		addWriteRegToBuffer(0x200, 0xB3);
-		addReadRegToBuffer(0x200);
-
-		addWriteRegToBuffer(0x01, 0xBA);
-		addReadRegToBuffer(0x01);
-		
-		addWriteRegToBuffer(0x200, 0xB3);
-		addReadRegToBuffer(0x200);
-		
-		addReadRegToBuffer(0x11);
-
-		sendBuffer();
-		
-		recvBuffer(5);
-		System.out.format("regs: %x %x %x %x %x\n", buffer.get(0), buffer.get(1), buffer.get(2), buffer.get(3), buffer.get(4));
-		*/
 	}
 	
 	private void initGPIO() throws D2XXException {
@@ -272,31 +250,28 @@ public class MRF24J40 {
 	}
 	
 	private void addWriteRegToBuffer(int reg, int val) {
-		addLowerCSToBuffer();
-		
-		mpsseBuf.put((byte) 0x11 ); // Clock Data Bytes Out on falling clock edge MSB first (no read) 
 		
 		if (reg < 0x40) {
+			addLowerCSToBuffer();
+		
+			mpsseBuf.put((byte) 0x11 ); // Clock Data Bytes Out on falling clock edge MSB first (no read) 
+		
 			mpsseBuf.put((byte) 1 );  // LengthL (2 bytes) 
 			mpsseBuf.put((byte) 0 );  // LengthH
 			
 			mpsseBuf.put((byte) ((reg << 1) | 0x01) );
 			mpsseBuf.put((byte) val );
+			
+			addRaiseCSToBuffer();
+			
 		} else {
-			assert(reg < 0x400);
-			
-			mpsseBuf.put((byte) 2 );  // LengthL (3 bytes) 
-			mpsseBuf.put((byte) 0 );  // LengthH
-			
-			mpsseBuf.put((byte) ((reg >> 3) | 0x80) );
-			mpsseBuf.put((byte) (((reg & 0x7) << 5) | 0x10) );
-			mpsseBuf.put((byte) val );			
+			addWriteLongRegToBuffer(reg, val);
 		}
-		
-		addRaiseCSToBuffer();
 	}
 
 	private void addWriteLongRegToBuffer(int reg, int val) {
+		assert(reg < 0x400);
+		
 		addLowerCSToBuffer();
 		
 		mpsseBuf.put((byte) 0x11 ); // Clock Data Bytes Out on falling clock edge MSB first (no read) 
@@ -312,33 +287,30 @@ public class MRF24J40 {
 	}
 
 	private void addReadRegToBuffer(int reg) {
-		addLowerCSToBuffer();
-		
-		mpsseBuf.put((byte) 0x11 ); // Clock Data Bytes Out on falling clock edge MSB first (no read) 
-		
 		if (reg < 0x40) {
+			addLowerCSToBuffer();
+		
+			mpsseBuf.put((byte) 0x11 ); // Clock Data Bytes Out on falling clock edge MSB first (no read) 
+		
 			mpsseBuf.put((byte) 0 );  // LengthL (1 bytes) 
 			mpsseBuf.put((byte) 0 );  // LengthH
 			
 			mpsseBuf.put((byte) (reg << 1) );
-		} else {
-			assert(reg < 0x400);
-			
-			mpsseBuf.put((byte) 1 );  // LengthL (2 bytes) 
+
+			mpsseBuf.put((byte) 0x20 ); // Clock Data Bytes In on rising clock edge MSB first (no write)
+			mpsseBuf.put((byte) 0 );  // LengthL (1 bytes) 
 			mpsseBuf.put((byte) 0 );  // LengthH
-			
-			mpsseBuf.put((byte) ((reg >> 3) | 0x80) );
-			mpsseBuf.put((byte) ((reg & 0x7) << 5) );
+	
+			addRaiseCSToBuffer();
+		
+		} else {
+			addReadLongRegToBuffer(reg);
 		}
-
-		mpsseBuf.put((byte) 0x20 ); // Clock Data Bytes In on rising clock edge MSB first (no write)
-		mpsseBuf.put((byte) 0 );  // LengthL (1 bytes) 
-		mpsseBuf.put((byte) 0 );  // LengthH
-
-		addRaiseCSToBuffer();
 	}
 	
 	private void addReadLongRegToBuffer(int reg) {
+		assert(reg < 0x400);
+		
 		addLowerCSToBuffer();
 		
 		mpsseBuf.put((byte) 0x11 ); // Clock Data Bytes Out on falling clock edge MSB first (no read) 
@@ -365,11 +337,16 @@ public class MRF24J40 {
 	private int readReg(int reg) throws D2XXException {
 		clearBuffer();
 		addReadRegToBuffer(reg);
+		addSendImmediateToBuffer();
 		sendBuffer();
 		
 		recvBuffer(1);
 
 		return mpsseBuf.get(0) & 0xFF;
+	}
+	
+	private void addSendImmediateToBuffer() {
+		mpsseBuf.put((byte) 0x87 ); // Send immediate
 	}
 	
 	public void reset() throws D2XXException {
@@ -473,6 +450,7 @@ public class MRF24J40 {
 			clearBuffer();
 			addWriteRegToBuffer(BBREG1, 0x04); // Disable RX
 			addReadRegToBuffer(RXFIFO); // Read length
+			addSendImmediateToBuffer();
 			sendBuffer();
 			recvBuffer(1);
 			
@@ -483,6 +461,7 @@ public class MRF24J40 {
 				addReadLongRegToBuffer(RXFIFO + 1 + idx);
 			}
 			addWriteRegToBuffer(BBREG1, 0x00); // Enable RX			
+			addSendImmediateToBuffer();
 			sendBuffer();
 			recvBuffer(len + 2);
 			
@@ -529,11 +508,11 @@ public class MRF24J40 {
 		
 		addWriteLongRegToBuffer(txReg++, 0x00); // Sequence Number
 
-		addWriteLongRegToBuffer(txReg++, 0xBA); // Source PAN ID (low)
-		addWriteLongRegToBuffer(txReg++, 0xBA); // Source PAN ID (high)
+		addWriteLongRegToBuffer(txReg++, panID & 0xFF); // Source PAN ID (low)
+		addWriteLongRegToBuffer(txReg++, panID >> 8); // Source PAN ID (high)
 		
-		addWriteLongRegToBuffer(txReg++, 0x01); // Source Address (low)
-		addWriteLongRegToBuffer(txReg++, 0x00); // Source Address (high)
+		addWriteLongRegToBuffer(txReg++, shortAddr & 0xFF); // Source Address (low)
+		addWriteLongRegToBuffer(txReg++, shortAddr >> 8); // Source Address (high)
 		
 		while (data.remaining() > 0) {
 			addWriteLongRegToBuffer(txReg++, data.get());
@@ -579,6 +558,7 @@ public class MRF24J40 {
 		clearBuffer();
 		addReadRegToBuffer(PANIDL);
 		addReadRegToBuffer(PANIDH);
+		addSendImmediateToBuffer();
 		sendBuffer();
 		
 		recvBuffer(2);
@@ -605,6 +585,7 @@ public class MRF24J40 {
 		clearBuffer();
 		addReadRegToBuffer(SADRL);
 		addReadRegToBuffer(SADRH);
+		addSendImmediateToBuffer();
 		sendBuffer();
 		
 		recvBuffer(2);
@@ -648,5 +629,42 @@ public class MRF24J40 {
 	public int getChannel() {
 		return channel;
 	}
-	
+
+	void testINTSTAT() throws D2XXException {
+		int cnt;
+		int cycles = 100000;
+		
+		long cycleDurations[] = new long[cycles];
+		
+		long startTS = System.nanoTime();
+		
+		for (cnt = 0; cnt < cycles; cnt++) {
+			long cycleStartTS = System.nanoTime();
+			
+			readReg(INTSTAT);
+			
+			long cycleEndTS = System.nanoTime();
+			cycleDurations[cnt] = cycleEndTS - cycleStartTS;
+		}
+		
+		long endTS = System.nanoTime();
+		
+		long duration = endTS - startTS;
+		Arrays.sort(cycleDurations);
+		
+		System.out.format("INTSTAT stress test results\n");
+		System.out.format("  read count: %d\n", cnt);
+		System.out.format("  total duration (in ns): %d\n", duration);
+		System.out.format("  rate (reads/s): %f\n", (double)1000000000 * cycles / duration);
+		System.out.format("  avg duration (in ns): %d\n", duration / cycles);
+		System.out.format("  duration median (in ns): %d\n", cycleDurations[cycles / 2]);
+		System.out.format("  duration 0.1%% quantile (in ns): %d\n", cycleDurations[cycles / 1000]);		
+		System.out.format("  duration 1%% quantile (in ns): %d\n", cycleDurations[cycles / 100]);		
+		System.out.format("  duration 5%% quantile (in ns): %d\n", cycleDurations[cycles / 20]);		
+		System.out.format("  duration 95%% quantile (in ns): %d\n", cycleDurations[cycles * 19 / 20]);		
+		System.out.format("  duration 99%% quantile (in ns): %d\n", cycleDurations[cycles * 99 / 100]);		
+		System.out.format("  duration 99.9%% quantile (in ns): %d\n", cycleDurations[cycles * 999 / 1000]);		
+		System.out.format("  shortest cycle duration (in ns): %d\n", cycleDurations[0]);
+		System.out.format("  longest cycle duration (in ns): %d\n", cycleDurations[cycles-1]);
+	}
 }
